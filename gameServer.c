@@ -23,11 +23,11 @@ typedef struct {
 typedef struct {
     int fd; // file descriptor for the player socket
     int id; //a unique identifier for the player
-    char rbuf[MAX_LINE]; // read buffer for incoming data
-    size_t rpos; //current position in the read buffer
-    Message *wqueue; //a queue of messages to be sent
-    size_t wq_size; //current size of the write queue
-    size_t wq_cap; //the capacity of the write queue
+    char readBuffer[MAX_LINE]; // read buffer for incoming data
+    size_t currentReadPos; //current position in the read buffer
+    Message *messageQueue; //a queue of messages to be sent
+    size_t writeQueueSize; //current size of the write queue
+    size_t writeQueueCapacity; //the capacity of the write queue
 } Client;
 
 typedef struct {
@@ -51,7 +51,7 @@ void cleanup() {
     for (size_t i = 0; i < max_players; i++) {//to iterate over all players
         if (clients[i].fd != -1) { // if the player is connected
             close(clients[i].fd); // close the player socket
-            free(clients[i].wqueue); // and free the message queue
+            free(clients[i].messageQueue); // and free the message queue
         }
     }
     for (size_t i = 0; i < waitq.count; i++)
@@ -67,15 +67,15 @@ void sigint_handler(int sig) {
 }
 
 void enqueue_message(Client *c, const char *msg, size_t len) {
-    if (c->wq_size >= c->wq_cap) {//if the write queue is full
-        size_t new_cap = c->wq_cap ? c->wq_cap * 2 : INITIAL_QUEUE_SIZE; //to double the capacity
-        Message *newq = realloc(c->wqueue, new_cap * sizeof(Message));//to reallocate the write queue
+    if (c->writeQueueSize >= c->writeQueueCapacity) {//if the write queue is full
+        size_t new_cap = c->writeQueueCapacity ? c->writeQueueCapacity * 2 : INITIAL_QUEUE_SIZE; //to double the capacity
+        Message *newq = realloc(c->messageQueue, new_cap * sizeof(Message));//to reallocate the write queue
         if (!newq) {
             perror("realloc");
             return;
         }
-        c->wqueue = newq;//to update the write queue
-        c->wq_cap = new_cap;//to update the capacity
+        c->messageQueue = newq;//to update the write queue
+        c->writeQueueCapacity = new_cap;//update the capacity
     }
 
     char *copy = strndup(msg, len);//to duplicate the message
@@ -84,26 +84,26 @@ void enqueue_message(Client *c, const char *msg, size_t len) {
         return;
     }
 
-    c->wqueue[c->wq_size] = (Message){copy, len, 0};//adding the message to the write queue
-    c->wq_size++;//incrementing the write queue size
+    c->messageQueue[c->writeQueueSize] = (Message){copy, len, 0};//adding the message to the write queue
+    c->writeQueueSize++;//incrementing the write queue size
 }
 
 void broadcast(const char *msg, int exclude_id) {
     for (size_t i = 0; i < max_players; i++) {//to iterate over all players
         if (clients[i].fd != -1 && clients[i].id != exclude_id) {//if the player is connected and not excluded 
-            enqueue_message(&clients[i], msg, strlen(msg));//to add the message to the player's write queue
+            enqueue_message(&clients[i], msg, strlen(msg));//add the message to the player's write queue
         }
     }
 }
 
 void reset_game() {
-    for (size_t i = 0; i < max_players; i++) {//to iterate over all players
+    for (size_t i = 0; i < max_players; i++) {// iterate over all players
         if (clients[i].fd != -1) {
             close(clients[i].fd);
             clients[i].fd = -1;
-            free(clients[i].wqueue);
-            clients[i].wqueue = NULL;
-            clients[i].wq_size = clients[i].wq_cap = 0;
+            free(clients[i].messageQueue);
+            clients[i].messageQueue = NULL;
+            clients[i].writeQueueSize = clients[i].writeQueueCapacity = 0;
         }
     }
     
@@ -119,21 +119,21 @@ void reset_game() {
 void promote_waiting() {
     while (avail_count > 0 && waitq.count > 0) {//while there are available player ids and waiting players
         int new_fd = waitq.fds[0];//to get the first waiting player
-        memmove(waitq.fds, waitq.fds + 1, (waitq.count - 1) * sizeof(int));//to remove the first waiting player
+        memmove(waitq.fds, waitq.fds + 1, (waitq.count - 1) * sizeof(int));//removING the first waiting player
         waitq.count--;
 
         int id = avail_ids[--avail_count];//to get the next available player id
-        size_t slot = id - 1;//to calculate the player's slot
+        size_t slot = id - 1;//calculate the player's slot
 
-        clients[slot].fd = new_fd;//to assign the player's socket
+        clients[slot].fd = new_fd;//assign the player's socket
         clients[slot].id = id;
-        clients[slot].rpos = 0;
-        clients[slot].wqueue = NULL;
-        clients[slot].wq_size = clients[slot].wq_cap = 0;
+        clients[slot].currentReadPos = 0;
+        clients[slot].messageQueue = NULL;
+        clients[slot].writeQueueSize = clients[slot].writeQueueCapacity = 0;
 
         char welcome[64];//to create a welcome message
         snprintf(welcome, sizeof(welcome), "Welcome to the game, your id is %d\n", id);
-        enqueue_message(&clients[slot], welcome, strlen(welcome));//to add the welcome message to the player's write queue
+        enqueue_message(&clients[slot], welcome, strlen(welcome));//adding the welcome message to the player's write queue
 
         char notify[64];
         snprintf(notify, sizeof(notify), "Player %d joined the game\n", id);
@@ -148,13 +148,13 @@ void handle_disconnect(size_t idx) {
 
     close(clients[idx].fd);//to close the player's socket
     clients[idx].fd = -1;
-    avail_ids[avail_count++] = clients[idx].id;//to add the player's id to the available ids
+    avail_ids[avail_count++] = clients[idx].id;//add the player's id to the available ids
     
-    free(clients[idx].wqueue);//to free the player's write queue
-    clients[idx].wqueue = NULL;
-    clients[idx].wq_size = clients[idx].wq_cap = 0;
+    free(clients[idx].messageQueue);//free the player's write queue
+    clients[idx].messageQueue = NULL;
+    clients[idx].writeQueueSize = clients[idx].writeQueueCapacity = 0;
 
-    promote_waiting();//to promote waiting players
+    promote_waiting();//to promote the waiting players
 }
 
 int main(int argc, char **argv) {
@@ -180,8 +180,8 @@ int main(int argc, char **argv) {
     target = (rand() % SECRET_NUM_MAX) + 1;//to generate a random secret number
 
     //initializing client structures
-    clients = calloc(max_players, sizeof(Client));//to allocate memory for the players
-    avail_ids = malloc(max_players * sizeof(int));//to allocate memory for the available player ids
+    clients = calloc(max_players, sizeof(Client));//allocate memory for the players
+    avail_ids = malloc(max_players * sizeof(int));//allocate memory for the available player ids
     for (size_t i = 0; i < max_players; i++) {
         clients[i].fd = -1;
         avail_ids[i] = i + 1;
@@ -211,19 +211,19 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    if (listen(welcome_fd, BACKLOG) < 0) {//to listen for incoming connections
+    if (listen(welcome_fd, BACKLOG) < 0) {//listen for incoming connections
         perror("listen");
         return EXIT_FAILURE;
     }
 
     printf("Server is ready to read from welcome socket %d\n", welcome_fd);
-    signal(SIGINT, sigint_handler);//to handle the SIGINT signal
+    signal(SIGINT, sigint_handler);//handle the SIGINT signal
    // printf("DEBUG: Server started. Secret number is %d\n", target);
 
     fd_set readfds, writefds;//file descriptor sets for select
     while (running) {//main server loop
-        FD_ZERO(&readfds);//to clear the read file descriptor set
-        FD_ZERO(&writefds);//to clear the write file descriptor set
+        FD_ZERO(&readfds);//clear the read file descriptor set
+        FD_ZERO(&writefds);//clear the write file descriptor set
         int max_fd = welcome_fd;
 
         FD_SET(welcome_fd, &readfds);//adding the welcome socket to the read file descriptor set
@@ -232,7 +232,7 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < max_players; i++) {//to iterate over all players
             if (clients[i].fd != -1) {
                 FD_SET(clients[i].fd, &readfds);//to add the player's socket to the read file descriptor set
-                if (clients[i].wq_size > 0)
+                if (clients[i].writeQueueSize > 0)
                     FD_SET(clients[i].fd, &writefds);//to add the player's socket to the write file descriptor set
                 if (clients[i].fd > max_fd)
                     max_fd = clients[i].fd;//to update the maximum file descriptor
@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
 
                 clients[slot].fd = new_fd;
                 clients[slot].id = id;
-                clients[slot].rpos = 0;
+                clients[slot].currentReadPos = 0;
 
                 char welcome[64];
                 snprintf(welcome, sizeof(welcome), "Welcome to the game, your id is %d\n", id);
@@ -298,18 +298,18 @@ int main(int argc, char **argv) {
                 printf("Server is ready to read from player %d on socket %d\n",clients[i].id, clients[i].fd);
                 
                 ssize_t n = recv(clients[i].fd, //to read data from the player's socket
-                               clients[i].rbuf + clients[i].rpos,//to read data into the read buffer
-                               MAX_LINE - clients[i].rpos, 0);//to read up to MAX_LINE bytes
+                               clients[i].readBuffer + clients[i].currentReadPos,//to read data into the read buffer
+                               MAX_LINE - clients[i].currentReadPos, 0);//to read up to MAX_LINE bytes
                 
                 if (n <= 0) {//if the player is disconnected
                     handle_disconnect(i);
                     continue;
                 }
 
-                clients[i].rpos += n;//to update the read position
-                clients[i].rbuf[clients[i].rpos] = '\0';//ensuring null termination
+                clients[i].currentReadPos += n;//to update the read position
+                clients[i].readBuffer[clients[i].currentReadPos] = '\0';//ensuring null termination
 
-                char *ptr = clients[i].rbuf;//to parse the read buffer
+                char *ptr = clients[i].readBuffer;//to parse the read buffer
                 char *line;
                 while ((line = strsep(&ptr, "\n")) != NULL) {//splitting the read buffer by newline
                     if (strlen(line) == 0) 
@@ -346,21 +346,21 @@ int main(int argc, char **argv) {
                 }
                 if (ptr) {//if there is remaining data
 
-                    size_t remaining = clients[i].rpos - (ptr - clients[i].rbuf);//to calculate the remaining data
-                    memmove(clients[i].rbuf, ptr, remaining);//to move the remaining data to the beginning of the read buffer
-                    clients[i].rpos = remaining;//to update the read position
-                    clients[i].rbuf[clients[i].rpos] = '\0'; //ensuring null termination
+                    size_t remaining = clients[i].currentReadPos - (ptr - clients[i].readBuffer);//to calculate the remaining data
+                    memmove(clients[i].readBuffer, ptr, remaining);//to move the remaining data to the beginning of the read buffer
+                    clients[i].currentReadPos = remaining;//to update the read position
+                    clients[i].readBuffer[clients[i].currentReadPos] = '\0'; //ensuring null termination
                 }
                  else {//if there is no remaining data
 
-                    clients[i].rpos = 0;
+                    clients[i].currentReadPos = 0;
                 }
             }
 
             // Write handling
-            if (FD_ISSET(clients[i].fd, &writefds) && clients[i].wq_size > 0) {//if there is activity on the player's socket and there are messages to send
+            if (FD_ISSET(clients[i].fd, &writefds) && clients[i].writeQueueSize > 0) {//if there is activity on the player's socket and there are messages to send
                 printf("Server is ready to write to player %d on socket %d\n",clients[i].id, clients[i].fd);
-                Message *msg = &clients[i].wqueue[0];
+                Message *msg = &clients[i].messageQueue[0];
                 ssize_t sent = send(clients[i].fd, 
                                   msg->data + msg->sent, 
                                   msg->len - msg->sent, 0);
@@ -374,8 +374,8 @@ int main(int argc, char **argv) {
                 msg->sent += sent;//to update the amount of data sent
                 if (msg->sent == msg->len) {//if the message is fully sent
                     free(msg->data);
-                    memmove(clients[i].wqueue, clients[i].wqueue + 1,(clients[i].wq_size - 1) * sizeof(Message));//remove the message from the write queue
-                    clients[i].wq_size--;
+                    memmove(clients[i].messageQueue, clients[i].messageQueue + 1,(clients[i].writeQueueSize - 1) * sizeof(Message));//remove the message from the write queue
+                    clients[i].writeQueueSize--;
                 }
             }
         }
